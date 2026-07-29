@@ -197,11 +197,11 @@ defmodule S3Uploader.Service do
 
     defp prepare_batch(batch) do
       Enum.reduce(batch, %{size: 0, count: 0, datetime_paths: [], last: nil}, fn %{
-                                                                                  stat: stat,
-                                                                                  datetime_path:
-                                                                                    path
-                                                                                } = rec,
-                                                                                acc ->
+                                                                                   stat: stat,
+                                                                                   datetime_path:
+                                                                                     path
+                                                                                 } = rec,
+                                                                                 acc ->
         %{
           size: acc.size + stat.size,
           count: acc.count + 1,
