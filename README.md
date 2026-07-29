@@ -32,6 +32,18 @@ end
 Configure the uploader in `config.exs`:
 
 ```elixir
+config :ex_aws,
+  hackney_options: [
+    pool: :ex_aws_pool,
+    # Max time to wait for a connection (in ms)
+    checkout_timeout: 8_000,
+    # Max time to wait for a response (in ms)
+    recv_timeout: 15_000
+  ],
+  access_key_id: [{:system, "AWS_ACCESS_KEY_ID"}, :instance_role],
+  secret_access_key: [{:system, "AWS_SECRET_ACCESS_KEY"}, :instance_role],
+  region: {:system, "AWS_REGION"}
+
 config :foo, :s3_uploader,
   sources: [
     traffic: [
@@ -69,6 +81,8 @@ Add it to your application supervision tree:
     if s3_uploder_config do
       sources = s3_uploder_config[:sources] || []
 
+      # Use a separate hackney pool for S3 uploads to avoid blocking other HTTP requests in the app.
+      # The pool name should match the one used in ExAws config
       :ok = :hackney_pool.start_pool(:ex_aws_pool, timeout: 15_000, max_connections: 40)
 
       # [{Hackney.Pool, name: :ex_aws_pool, max_connections: 40, timeout: 15_000}] ++
