@@ -10,6 +10,8 @@ defmodule S3Uploader.Service do
   """
   use GenServer
 
+  use Private
+
   require Logger
 
   @doc "Start the server"
@@ -95,190 +97,192 @@ defmodule S3Uploader.Service do
     {:noreply, state, state.check_delay}
   end
 
-  defp process_files(state) do
-    Logger.debug("process_files function")
+  private do
+    defp process_files(state) do
+      Logger.debug("process_files function")
 
-    %{
-      archive_dir: archive_dir,
-      batch_size: batch_size,
-      datetime_pattern: datetime_pattern,
-      file_pattern: file_pattern,
-      in_dir: in_dir,
-      max_concurrency: max_concurrency,
-      min_age: min_age,
-      timeout: timeout
-    } = state
+      %{
+        archive_dir: archive_dir,
+        batch_size: batch_size,
+        datetime_pattern: datetime_pattern,
+        file_pattern: file_pattern,
+        in_dir: in_dir,
+        max_concurrency: max_concurrency,
+        min_age: min_age,
+        timeout: timeout
+      } = state
 
-    {:ok, all_files} = File.ls(in_dir)
-    Logger.debug("Files in #{in_dir}: #{inspect(all_files)}")
+      {:ok, all_files} = File.ls(in_dir)
+      Logger.debug("Files in #{in_dir}: #{inspect(all_files)}")
 
-    now = :calendar.datetime_to_gregorian_seconds(:calendar.universal_time())
+      now = :calendar.datetime_to_gregorian_seconds(:calendar.universal_time())
 
-    batches =
-      all_files
-      |> Enum.filter(&by_name(&1, file_pattern))
-      |> Enum.sort()
-      |> Enum.map(fn name -> %{name: name, path: Path.join(in_dir, name)} end)
-      |> Enum.map(&get_datetime_from_filename(&1, datetime_pattern))
-      |> Enum.flat_map(&stat_file/1)
-      |> Enum.filter(&by_age(&1, now, min_age))
-      |> Enum.chunk_every(batch_size)
+      batches =
+        all_files
+        |> Enum.filter(&by_name(&1, file_pattern))
+        |> Enum.sort()
+        |> Enum.map(fn name -> %{name: name, path: Path.join(in_dir, name)} end)
+        |> Enum.map(&get_datetime_from_filename(&1, datetime_pattern))
+        |> Enum.flat_map(&stat_file/1)
+        |> Enum.filter(&by_age(&1, now, min_age))
+        |> Enum.chunk_every(batch_size)
 
-    for batch <- batches do
-      Logger.debug("Processing batch of #{length(batch)} files")
-      # Logger.debug("Batch files: #{inspect(batch)}")
+      for batch <- batches do
+        Logger.debug("Processing batch of #{length(batch)} files")
+        # Logger.debug("Batch files: #{inspect(batch)}")
 
-      info = prepare_batch(batch)
-      Logger.debug("Batch info: #{inspect(info)}")
-      make_dirs(info.datetime_paths, archive_dir)
+        info = prepare_batch(batch)
+        Logger.debug("Batch info: #{inspect(info)}")
+        make_dirs(info.datetime_paths, archive_dir)
 
-      start_time = :erlang.system_time(:millisecond)
+        start_time = :erlang.system_time(:millisecond)
 
-      stream =
-        Task.async_stream(
-          batch,
-          &process_file(&1, state),
-          max_concurrency: max_concurrency,
-          timeout: timeout
+        stream =
+          Task.async_stream(
+            batch,
+            &process_file(&1, state),
+            max_concurrency: max_concurrency,
+            timeout: timeout
+          )
+
+        Stream.run(stream)
+
+        dur_ms = :erlang.system_time(:millisecond) - start_time
+
+        %{size_mb: size_mb, dur: dur, rate: rate} = batch_stats(info, dur_ms)
+        lag = DateTime.diff(DateTime.utc_now(), info.last.datetime, :second)
+
+        Logger.info(
+          "Uploaded #{info.last.name} #{info.count} files in #{dur}s #{size_mb} MB (#{rate} MB/s) lag #{lag}s"
+        )
+      end
+    end
+
+    defp batch_stats(info, 0), do: batch_stats(info, 1)
+
+    defp batch_stats(info, dur_ms) do
+      size_mb = Float.round(info.size / (1024.0 * 1024.0), 2)
+      dur = Float.round(dur_ms / 1000.0, 3)
+      rate = Float.round(size_mb / dur, 2)
+      %{size_mb: size_mb, dur: dur, rate: rate}
+    end
+
+    # Create archive directories
+    defp make_dirs(paths, archive_dir) do
+      paths
+      |> Enum.uniq()
+      |> Enum.map(fn path -> :ok = File.mkdir_p(Path.join(archive_dir, path)) end)
+    end
+
+    @spec process_file(map(), map()) :: :ok
+    defp process_file(rec, state) do
+      %{name: name, path: path, datetime_path: datetime_path} = rec
+
+      dest_path = Path.join([state.archive_dir, datetime_path, name])
+      s3_path = Path.join(state.bucket_prefix, dest_path)
+
+      Logger.debug("Uploading file #{path} to s3://#{state.bucket}/#{s3_path}")
+
+      path
+      |> ExAws.S3.Upload.stream_file()
+      |> ExAws.S3.upload(state.bucket, s3_path,
+        timeout: state.timeout,
+        bucket_region: state.bucket_region
+      )
+      |> ExAws.request!()
+
+      Logger.debug("Moving file #{path} to archive #{dest_path}")
+      :ok = File.rename(path, dest_path)
+    end
+
+    defp prepare_batch(batch) do
+      Enum.reduce(batch, %{size: 0, count: 0, datetime_paths: [], last: nil}, fn %{
+                                                                                  stat: stat,
+                                                                                  datetime_path:
+                                                                                    path
+                                                                                } = rec,
+                                                                                acc ->
+        %{
+          size: acc.size + stat.size,
+          count: acc.count + 1,
+          datetime_paths: [path | acc.datetime_paths],
+          last: rec
+        }
+      end)
+    end
+
+    # Filter function to test if filename matches Regex pattern
+    @spec by_name(binary(), Regex.t()) :: boolean()
+    defp by_name(filename, pattern) do
+      Regex.match?(pattern, filename)
+    end
+
+    @spec stat_file(map()) :: list(map())
+    defp stat_file(%{path: path} = rec) do
+      case File.stat(path, time: :universal) do
+        {:ok, %{type: :regular} = stat} ->
+          [Map.put(rec, :stat, stat)]
+
+        {:ok, %{type: :directory}} ->
+          # Logger.debug("Skipping #{type} #{path}")
+          []
+
+        {:ok, %{type: type}} ->
+          Logger.debug("Skipping #{type} #{path}")
+          []
+
+        {:error, reason} ->
+          Logger.error("Could not stat file #{path}: #{reason}")
+          []
+      end
+    end
+
+    # Filter function to skip new files
+    @spec by_age(map(), integer(), integer()) :: boolean()
+    defp by_age(%{path: path, stat: stat}, now, min_age) do
+      if age(stat.mtime, now) > min_age do
+        true
+      else
+        Logger.debug("Skipping new file #{path}")
+        false
+      end
+    end
+
+    @doc "Get file age in seconds"
+    defp age(datetime, now) do
+      now - :calendar.datetime_to_gregorian_seconds(datetime)
+    end
+
+    # Extract datetime from filename using Regex pattern
+    defp get_datetime_from_filename(%{path: path} = rec, pattern) do
+      {:ok, datetime} = filename_to_datetime(path, pattern)
+      datetime_path = datetime_to_path(datetime)
+      Map.merge(rec, %{datetime: datetime, datetime_path: datetime_path})
+    end
+
+    # Get datetime from filename using Regex pattern
+    @spec filename_to_datetime(binary(), Regex.t()) :: {:ok, DateTime.t()}
+    defp filename_to_datetime(filename, pattern) do
+      named_captures = Regex.named_captures(pattern, filename)
+
+      {:ok, date} =
+        Date.new(
+          String.to_integer(named_captures["year"]),
+          String.to_integer(named_captures["month"]),
+          String.to_integer(named_captures["day"])
         )
 
-      Stream.run(stream)
-
-      dur_ms = :erlang.system_time(:millisecond) - start_time
-
-      %{size_mb: size_mb, dur: dur, rate: rate} = batch_stats(info, dur_ms)
-      lag = DateTime.diff(DateTime.utc_now(), info.last.datetime, :second)
-
-      Logger.info(
-        "Uploaded #{info.last.name} #{info.count} files in #{dur}s #{size_mb} MB (#{rate} MB/s) lag #{lag}s"
-      )
+      {:ok, time} = Time.new(0, 0, 0, 0)
+      DateTime.new(date, time, "Etc/UTC")
     end
-  end
 
-  defp batch_stats(info, 0), do: batch_stats(info, 1)
+    @spec datetime_to_path(DateTime.t()) :: binary()
+    defp datetime_to_path(datetime) do
+      year = datetime.year |> Integer.to_string() |> String.pad_leading(4, "0")
+      month = datetime.month |> Integer.to_string() |> String.pad_leading(2, "0")
+      day = datetime.day |> Integer.to_string() |> String.pad_leading(2, "0")
 
-  defp batch_stats(info, dur_ms) do
-    size_mb = Float.round(info.size / (1024.0 * 1024.0), 2)
-    dur = Float.round(dur_ms / 1000.0, 3)
-    rate = Float.round(size_mb / dur, 2)
-    %{size_mb: size_mb, dur: dur, rate: rate}
-  end
-
-  # Create archive directories
-  def make_dirs(paths, archive_dir) do
-    paths
-    |> Enum.uniq()
-    |> Enum.map(fn path -> :ok = File.mkdir_p(Path.join(archive_dir, path)) end)
-  end
-
-  @spec process_file(map(), map()) :: :ok
-  def process_file(rec, state) do
-    %{name: name, path: path, datetime_path: datetime_path} = rec
-
-    dest_path = Path.join([state.archive_dir, datetime_path, name])
-    s3_path = Path.join(state.bucket_prefix, dest_path)
-
-    Logger.debug("Uploading file #{path} to s3://#{state.bucket}/#{s3_path}")
-
-    path
-    |> ExAws.S3.Upload.stream_file()
-    |> ExAws.S3.upload(state.bucket, s3_path,
-      timeout: state.timeout,
-      bucket_region: state.bucket_region
-    )
-    |> ExAws.request!()
-
-    Logger.debug("Moving file #{path} to archive #{dest_path}")
-    :ok = File.rename(path, dest_path)
-  end
-
-  def prepare_batch(batch) do
-    Enum.reduce(batch, %{size: 0, count: 0, datetime_paths: [], last: nil}, fn %{
-                                                                                 stat: stat,
-                                                                                 datetime_path:
-                                                                                   path
-                                                                               } = rec,
-                                                                               acc ->
-      %{
-        size: acc.size + stat.size,
-        count: acc.count + 1,
-        datetime_paths: [path | acc.datetime_paths],
-        last: rec
-      }
-    end)
-  end
-
-  # Filter function to test if filename matches Regex pattern
-  @spec by_name(binary(), Regex.t()) :: boolean()
-  def by_name(filename, pattern) do
-    Regex.match?(pattern, filename)
-  end
-
-  @spec stat_file(map()) :: list(map())
-  def stat_file(%{path: path} = rec) do
-    case File.stat(path, time: :universal) do
-      {:ok, %{type: :regular} = stat} ->
-        [Map.put(rec, :stat, stat)]
-
-      {:ok, %{type: :directory}} ->
-        # Logger.debug("Skipping #{type} #{path}")
-        []
-
-      {:ok, %{type: type}} ->
-        Logger.debug("Skipping #{type} #{path}")
-        []
-
-      {:error, reason} ->
-        Logger.error("Could not stat file #{path}: #{reason}")
-        []
+      Path.join([year, month, day])
     end
-  end
-
-  # Filter function to skip new files
-  @spec by_age(map(), integer(), integer()) :: boolean()
-  def by_age(%{path: path, stat: stat}, now, min_age) do
-    if age(stat.mtime, now) > min_age do
-      true
-    else
-      Logger.debug("Skipping new file #{path}")
-      false
-    end
-  end
-
-  @doc "Get file age in seconds"
-  def age(datetime, now) do
-    now - :calendar.datetime_to_gregorian_seconds(datetime)
-  end
-
-  # Extract datetime from filename using Regex pattern
-  def get_datetime_from_filename(%{path: path} = rec, pattern) do
-    {:ok, datetime} = filename_to_datetime(path, pattern)
-    datetime_path = datetime_to_path(datetime)
-    Map.merge(rec, %{datetime: datetime, datetime_path: datetime_path})
-  end
-
-  # Get datetime from filename using Regex pattern
-  @spec filename_to_datetime(binary(), Regex.t()) :: {:ok, DateTime.t()}
-  def filename_to_datetime(filename, pattern) do
-    named_captures = Regex.named_captures(pattern, filename)
-
-    {:ok, date} =
-      Date.new(
-        String.to_integer(named_captures["year"]),
-        String.to_integer(named_captures["month"]),
-        String.to_integer(named_captures["day"])
-      )
-
-    {:ok, time} = Time.new(0, 0, 0, 0)
-    DateTime.new(date, time, "Etc/UTC")
-  end
-
-  @spec datetime_to_path(DateTime.t()) :: binary()
-  def datetime_to_path(datetime) do
-    year = datetime.year |> Integer.to_string() |> String.pad_leading(4, "0")
-    month = datetime.month |> Integer.to_string() |> String.pad_leading(2, "0")
-    day = datetime.day |> Integer.to_string() |> String.pad_leading(2, "0")
-
-    Path.join([year, month, day])
   end
 end
