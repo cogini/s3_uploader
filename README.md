@@ -29,7 +29,61 @@ def deps do
 end
 ```
 
+Configure the uploader in `config.exs`:
+
+```elixir
+config :foo, :s3_uploader,
+  sources: [
+    traffic: [
+      max_concurrency: 10,
+      batch_size: 50,
+      in_dir: "/var/log/foo/traffic/archive",
+      archive_dir: "/var/log/foo/traffic/archive",
+      file_pattern: "traffic-\\d{8}-\\d{4}\\.log$",
+      datetime_pattern: "traffic-(?<year>\\d{4})(?<month>\\d{2})(?<day>\\d{2})",
+      bucket: "foo-prod-traffic-logs",
+      bucket_prefix: "traffic",
+      bucket_region: "eu-central-1"
+    ]
+  ]
+```
+
+Add it to your application supervision tree:
+
+```elixir
+  @app :foo
+
+  @impl true
+  def init(args) do
+    children =
+      List.flatten([
+        s3_uploader_spec(args)
+      ])
+
+    Supervisor.init(children, strategy: :one_for_one, max_restarts: 1000, max_seconds: 300)
+  end
+
+  defp s3_uploader_spec(args) do
+    s3_uploder_config = Application.get_env(@app, :s3_uploader)
+
+    if s3_uploder_config do
+      sources = s3_uploder_config[:sources] || []
+
+      :ok = :hackney_pool.start_pool(:ex_aws_pool, timeout: 15_000, max_connections: 40)
+
+      # [{Hackney.Pool, name: :ex_aws_pool, max_connections: 40, timeout: 15_000}] ++
+      for {name, config} <- sources do
+        id = String.to_atom("s3_uploader_#{name}")
+        config = Keyword.put(config, :hostname, args[:hostname])
+        Logger.info("Starting S3 Uploader #{name}: #{inspect(config)}")
+        %{id: id, start: {S3Uploader, :start_link, [config]}}
+      end
+    else
+      []
+    end
+  end
+```
+
 Documentation can be generated with [ExDoc](https://github.com/elixir-lang/ex_doc)
 and published on [HexDocs](https://hexdocs.pm). Once published, the docs can
 be found at <https://hexdocs.pm/s3_uploader>.
-
