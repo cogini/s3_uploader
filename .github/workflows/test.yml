@@ -1,0 +1,139 @@
+---
+name: Test
+on:
+  push:
+    branches:
+      - "main"
+  # pull_request:
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  test:
+    name: Run tests
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        otp: ['24', '25', '26', '27', '28', '29']
+        elixir: ['1.15.7', '1.16.3', '1.17.3', '1.18.4', '1.19.5', '1.20.2']
+        # https://hexdocs.pm/elixir/compatibility-and-deprecations.html
+        exclude:
+          - elixir: '1.20.2'
+            otp: '26'
+          - elixir: '1.20.2'
+            otp: '25'
+          - elixir: '1.20.2'
+            otp: '24'
+
+          - elixir: '1.19.5'
+            otp: '29'
+          - elixir: '1.19.5'
+            otp: '25'
+          - elixir: '1.19.5'
+            otp: '24'
+
+          - elixir: '1.18.4'
+            otp: '29'
+          - elixir: '1.18.4'
+            otp: '28'
+          - elixir: '1.18.4'
+            otp: '24'
+
+          - elixir: '1.17.3'
+            otp: '29'
+          - elixir: '1.17.3'
+            otp: '28'
+          - elixir: '1.17.3'
+            otp: '24'
+
+          - elixir: '1.16.3'
+            otp: '29'
+          - elixir: '1.16.3'
+            otp: '28'
+          - elixir: '1.16.3'
+            otp: '27'
+
+          - elixir: '1.15.7'
+            otp: '29'
+          - elixir: '1.15.7'
+            otp: '28'
+          - elixir: '1.15.7'
+            otp: '27'
+    env:
+      MIX_ENV: test
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v6
+
+      - name: Install Erlang and Elixir
+        uses: erlef/setup-beam@v1
+        with:
+          otp-version: ${{ matrix.otp }}
+          elixir-version: ${{ matrix.elixir }}
+
+      - name: Install tools
+        # Old syntax supported by Elixir 1.13
+        run: mix 'do' local.rebar --force, local.hex --force
+        # New syntax
+        # run: mix 'do' local.rebar --force + local.hex --force
+
+      - name: Cache deps
+        uses: actions/cache@v5
+        env:
+          cache-name: cache-elixir-deps-${{ github.ref_name }}
+        with:
+          path: deps
+          key: |
+            ${{runner.os}}-mix-${{env.cache-name}}-${{matrix.otp}}-${{matrix.elixir}}-${{ hashFiles('**/mix.lock') }}
+          restore-keys: |
+            ${{runner.os}}-mix-${{env.cache-name}}-${{matrix.otp}}-${{matrix.elixir}}-
+
+      - name: Cache compiled build
+        uses: actions/cache@v5
+        env:
+          cache-name: cache-compiled-build
+        with:
+          path: _build
+          key: |
+            ${{runner.os}}-mix-${{env.cache-name}}-${{matrix.otp}}-${{matrix.elixir}}-${{ hashFiles('**/mix.lock') }}
+          restore-keys: |
+            ${{runner.os}}-mix-${{env.cache-name}}-${{matrix.otp}}-${{matrix.elixir}}-
+
+      # Force full recompile on builds that are retried.
+      - name: Clean deps to avoid flaky incremental builds
+        if: github.run_attempt != '1'
+        run: |
+          mix deps.clean --all
+          mix clean
+
+      - name: Get Elixir deps
+        run: mix deps.get
+
+      - name: Compile
+        run: mix compile --warnings-as-errors
+
+      - name: Run tests
+        run: mix test
+
+      - name: Run credo
+        run: mix quality.ci
+
+      - name: Publish unit test results to GitHub
+        uses: EnricoMi/publish-unit-test-result-action@v2
+        # Run even if tests fail
+        if: always()
+        with:
+          junit_files: _build/test/junit-reports/*.xml
+          # junit_files: _build/test/lib/*/*.xml
+          check_name: "Test Results ${{matrix.elixir}} ${{matrix.otp}}"
+
+      # - name: Upload results to Datadog
+      #   if: always()
+      #   continue-on-error: true
+      #   env:
+      #     DD_API_KEY: ${{ secrets.ACTIONS_DD_API_KEY }}
+      #     DD_ENV: ci
+      #   run: |
+      #     npm install -g @datadog/datadog-ci
+      #     datadog-ci junit upload --service api-graphql _build/test/lib/*/test-junit-report.xml
