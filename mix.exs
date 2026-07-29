@@ -57,7 +57,7 @@ defmodule S3Uploader.MixProject do
       {:excoveralls, "~> 0.18.0", only: [:dev, :test], runtime: false},
       {:junit_formatter, "~> 3.3", only: [:dev, :test], runtime: false},
       {:mix_audit, "~> 2.0", only: [:dev, :test], runtime: false},
-      {:styler, "~> 1.11.0", only: [:dev, :test], runtime: false}
+      {:styler, "~> 1.12.0", only: [:dev, :test], runtime: false}
     ]
   end
 
