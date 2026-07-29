@@ -1,28 +1,123 @@
 defmodule S3Uploader.MixProject do
   use Mix.Project
 
+  @github "https://github.com/cogini/s3_uploader"
+  @version "0.7.0"
+
   def project do
     [
       app: :s3_uploader,
-      version: "0.1.0",
-      elixir: "~> 1.20-rc",
+      version: @version,
+      elixir: "~> 1.19",
+      elixirc_paths: elixirc_paths(Mix.env()),
       start_permanent: Mix.env() == :prod,
+      aliases: aliases(),
+      dialyzer: [
+        plt_add_apps: [:mix, :ex_unit]
+      ],
+      test_coverage: [tool: ExCoveralls],
+      description: description(),
+      package: package(),
+      source_url: @github,
+      homepage_url: @github,
+      docs: docs(),
       deps: deps()
     ]
   end
 
-  # Run "mix help compile.app" to learn about applications.
   def application do
     [
       extra_applications: [:logger]
     ]
   end
 
-  # Run "mix help deps" to learn about dependencies.
+  def cli do
+    [
+      preferred_envs: [
+        coveralls: :test,
+        "coveralls.detail": :test,
+        "coveralls.post": :test,
+        "coveralls.html": :test,
+        "coveralls.lcov": :test,
+        quality: :test,
+        "quality.ci": :test
+      ]
+    ]
+  end
+
+  defp elixirc_paths(:dev), do: ["lib", "test/support"]
+  defp elixirc_paths(:test), do: ["lib", "test/support"]
+  defp elixirc_paths(_), do: ["lib"]
+
   defp deps do
     [
-      # {:dep_from_hexpm, "~> 0.3.0"},
-      # {:dep_from_git, git: "https://github.com/elixir-lang/my_dep.git", tag: "0.1.0"}
+      {:credo, "~> 1.6", only: [:dev, :test], runtime: false},
+      {:dialyxir, "~> 1.4", only: [:dev, :test], runtime: false},
+      {:ex_doc, "~> 0.40.0", only: :dev, runtime: false},
+      {:excoveralls, "~> 0.18.0", only: [:dev, :test], runtime: false},
+      {:junit_formatter, "~> 3.3", only: [:dev, :test], runtime: false},
+      {:mix_audit, "~> 2.0", only: [:dev, :test], runtime: false},
+      {:styler, "~> 1.11.0", only: [:dev, :test], runtime: false}
+    ]
+  end
+
+  defp description do
+    "Library to upload files to S3"
+  end
+
+  defp package do
+    [
+      description: description(),
+      maintainers: ["Jake Morrison"],
+      licenses: ["Apache-2.0"],
+      links: %{
+        "GitHub" => @github,
+        "Changelog" => "#{@github}/blob/#{@version}/CHANGELOG.md##{String.replace(@version, ".", "")}"
+      }
+    ]
+  end
+
+  defp docs do
+    [
+      main: "readme",
+      source_url: @github,
+      source_ref: @version,
+      extras: [
+        "README.md",
+        "CHANGELOG.md": [title: "Changelog"],
+        "LICENSE.md": [title: "License (Apache-2.0)"],
+        "CONTRIBUTING.md": [title: "Contributing"],
+        "CODE_OF_CONDUCT.md": [title: "Code of Conduct"]
+      ],
+      # api_reference: false,
+      source_url_pattern: "#{@github}/blob/main/%{path}#L%{line}"
+    ]
+  end
+
+  defp aliases do
+    [
+      setup: ["deps.get"],
+      quality: [
+        "test",
+        "format --check-formatted",
+        "credo",
+        # mix deps.clean --unlock --unused
+        "deps.unlock --check-unused",
+        # mix deps.update
+        # "hex.outdated",
+        # "hex.audit",
+        "deps.audit --ignore-package-names cowlib",
+        "dialyzer --quiet-with-result"
+      ],
+      "quality.ci": [
+        "format --check-formatted",
+        "deps.unlock --check-unused",
+        # "hex.outdated",
+        # "hex.audit",
+        "deps.audit --ignore-package-names cowlib",
+        "credo",
+        "dialyzer --quiet-with-result"
+      ]
     ]
   end
 end
