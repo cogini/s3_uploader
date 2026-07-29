@@ -53,6 +53,8 @@ defmodule S3Uploader.MixProject do
     [
       {:credo, "~> 1.6", only: [:dev, :test], runtime: false},
       {:dialyxir, "~> 1.4", only: [:dev, :test], runtime: false},
+      {:ex_aws, "~> 2.6"},
+      {:ex_aws_s3, "~> 2.5"},
       {:ex_doc, "~> 0.40.0", only: :dev, runtime: false},
       {:excoveralls, "~> 0.18.0", only: [:dev, :test], runtime: false},
       {:junit_formatter, "~> 3.3", only: [:dev, :test], runtime: false},
