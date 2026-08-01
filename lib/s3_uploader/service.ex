@@ -248,7 +248,7 @@ defmodule S3Uploader.Service do
       end
     end
 
-    @doc "Get file age in seconds"
+    # Get file age in seconds
     defp age(datetime, now) do
       now - :calendar.datetime_to_gregorian_seconds(datetime)
     end
