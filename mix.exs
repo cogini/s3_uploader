@@ -57,6 +57,7 @@ defmodule S3Uploader.MixProject do
       {:ex_aws_s3, "~> 2.5"},
       {:ex_doc, "~> 0.40.0", only: :dev, runtime: false},
       {:excoveralls, "~> 0.18.0", only: [:dev, :test], runtime: false},
+      {:gen_stage, "~> 1.3"},
       # {:hackney, "~> 4.0"},
       {:junit_formatter, "~> 3.3", only: [:dev, :test], runtime: false},
       {:mix_audit, "~> 2.0", only: [:dev, :test], runtime: false},
