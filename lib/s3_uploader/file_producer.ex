@@ -62,7 +62,7 @@ defmodule S3Uploader.FileProducer do
       # Last file read from the input directory
       last_file: nil,
 
-      # How often to check for new files in milliseconds
+      # How often to check for new files in ms
       fetch_interval: fetch_interval,
     }
 
@@ -73,8 +73,8 @@ defmodule S3Uploader.FileProducer do
   end
 
   @impl true
+  # Fulfill demand from queue
   def handle_demand(incoming_demand, state) do
-    # Fulfil demand from queue
     %{demand: demand, queue: queue} = state
 
     queue_len = :queue.len(queue)
@@ -88,10 +88,10 @@ defmodule S3Uploader.FileProducer do
     {:noreply, events, %{state | queue: remaining_queue, demand: remaining_demand}}
   end
 
-  # Fetch new files from the input directory and add them to the queue
   @impl true
+  # Add new files from the input dir to the queue
   def handle_info(:fetch, state) do
-    Logger.info("handle_info(:fetch) state: #{inspect(state)}")
+    Logger.debug("handle_info(:fetch) state: #{inspect(state)}")
 
     %{config: config, queue: queue, demand: demand} = state
 
@@ -106,6 +106,11 @@ defmodule S3Uploader.FileProducer do
 
     Process.send_after(self(), :fetch, state.fetch_interval)
     {:noreply, events, %{new_state | queue: remaining_queue, demand: remaining_demand}}
+  end
+
+  def handle_info(message, state) do
+    Logger.info(fn -> "Unexpected message: #{inspect(message)}" end)
+    {:noreply, [], state}
   end
 
   private do
