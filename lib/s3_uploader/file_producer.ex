@@ -151,14 +151,13 @@ defmodule S3Uploader.FileProducer do
           Logger.debug("new_files: #{inspect(new_files)}")
 
           if Enum.empty?(new_files) do
-            Logger.debug("queue len: #{:queue.len(queue)}")
+            Logger.debug("No new files found in #{config.in_dir}")
             {queue, state}
           else
             last_file = List.last(new_files).name
-            Logger.debug("New last_file: #{inspect(last_file)}")
-
             new_queue = Enum.reduce(new_files, queue, &:queue.in/2)
-            Logger.debug("new queue len: #{:queue.len(new_queue)}")
+            # Logger.debug("new queue len: #{:queue.len(new_queue)}")
+            Logger.debug("Added new files to queue: #{length(new_files)}, last_file: #{last_file}")
             {new_queue, %{state | last_file: last_file}}
           end
 
@@ -178,7 +177,7 @@ defmodule S3Uploader.FileProducer do
       } = config
       
       with {:ok, all_files} <- File.ls(in_dir) do
-          Logger.debug("All files in #{in_dir}: #{inspect(all_files)}")
+          Logger.debug("all_files in #{in_dir}: #{inspect(all_files)}")
 
           files =
             all_files
