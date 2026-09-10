@@ -15,7 +15,7 @@ defmodule S3Uploader.FileProducer do
   def init(args) do
     Logger.info("FileProducer init: #{inspect(args)}")
 
-    archive_dir = args[:archive_dir]
+    archive_dir = args[:archive_dir] || Path.join(args[:in_dir], "archive")
     :ok = File.mkdir_p!(archive_dir)
 
     config = %{
