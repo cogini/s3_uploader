@@ -170,23 +170,25 @@ defmodule S3Uploader.FileProducer do
     # Read files from the input directory, filtering by name and age
     @spec read_files(map()) :: {:ok, list(map())} | {:error, File.posix() | :badarg | {:no_translation, binary()}}
     defp read_files(config) do
-      %{
-        # datetime_pattern: datetime_pattern,
-        file_pattern: file_pattern,
-        in_dir: in_dir,
-      } = config
+      %{file_pattern: file_pattern, in_dir: in_dir} = config
       
       with {:ok, all_files} <- File.ls(in_dir) do
           Logger.debug("all_files in #{in_dir}: #{inspect(all_files)}")
 
           files =
             all_files
-            |> Enum.filter(&Regex.match?(file_pattern, &1))
+            |> match_names(file_pattern)
             |> Enum.sort()
-            |> Enum.map(fn name -> %{name: name, path: Path.join(in_dir, name)} end)
+            |> Enum.map(fn name -> %{file_name: name, path: Path.join(in_dir, name)} end)
 
         {:ok, files}
       end
+    end
+
+    # Select names that match Regex pattern, if any
+    defp match_names(names, nil), do: names
+    defp match_names(names, file_pattern) do
+      Enum.filter(names, fn name -> Regex.match?(file_pattern, name) end)
     end
 
     # Get files that are newer than the last proccessed file, if any
