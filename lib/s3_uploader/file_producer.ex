@@ -31,7 +31,8 @@ defmodule S3Uploader.FileProducer do
 
       # Regex matching files to process
       # Files that do not match this pattern will be ignored
-      file_pattern: Regex.compile!(args[:file_pattern] || ".*\\.log$"),
+      # file_pattern: Regex.compile!(args[:file_pattern] || ".*\\.log$"),
+      file_pattern: Regex.compile!(args[:file_pattern] || ".*$"),
 
       # Regex to extract datetime from filename
       datetime_pattern:
