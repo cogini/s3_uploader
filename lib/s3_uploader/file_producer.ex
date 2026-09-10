@@ -1,33 +1,35 @@
 defmodule S3Uploader.FileProducer do
   @moduledoc """
-  A GenStage producer that reads files from a directory.
+  A Broadway producer that reads files from a directory.
   """
   use GenStage
+
+  @behaviour Broadway.Producer
+  # @behaviour Broadway.Acknowledger
+
   use Private
 
   require Logger
 
-  def start_link(config) do
-    GenStage.start_link(__MODULE__, config, name: __MODULE__)
+  @doc false
+  def start_link(opts) do
+    GenStage.start_link(__MODULE__, opts, name: __MODULE__)
   end
 
   @impl true
   def init(args) do
-    Logger.info("FileProducer init: #{inspect(args)}")
-
-    archive_dir = args[:archive_dir] || Path.join(args[:in_dir], "archive")
-    :ok = File.mkdir_p!(archive_dir)
+    Logger.info("#{__MODULE__} init: #{inspect(args)}")
 
     config = %{
       # Source directory for files
       in_dir: args[:in_dir],
 
       # Directory to save files after they have been processed
-      archive_dir: archive_dir,
+      archive_dir: args[:archive_dir],
 
       # Ignore files newer than this number of seconds.
       # Avoids processing files that are currently being written.
-      min_age: args[:min_age] || 60,
+      min_age: args[:min_age] || 0,
 
       # Regex matching files to process
       # Files that do not match this pattern will be ignored
@@ -35,7 +37,7 @@ defmodule S3Uploader.FileProducer do
       file_pattern: Regex.compile!(args[:file_pattern] || ".*$"),
 
       # Files to queue in advance of demand
-      readahead_count: args[:readahead_count] || 10,
+      prefetch_count: args[:prefetch_count] || 10,
 
       # Regex to extract datetime from filename
       datetime_pattern:
@@ -44,112 +46,157 @@ defmodule S3Uploader.FileProducer do
         ),
     }
 
+    fetch_interval = args[:fetch_interval] || 10_000
+
     state = %{
       config: config,
-      last_file: nil,
+
+      # Unfulfilled demand from consumers
       demand: 0,
-      queue: :queue.new()
+
+      # Prefetch queue to avoid reading dir on every demand
+      queue: :queue.new(),
+
+      # Last file read from the input directory
+      last_file: nil,
+
+      # How often to check for new files in milliseconds
+      fetch_interval: fetch_interval,
     }
 
     Logger.debug("state: #{inspect(state)}")
 
+    Process.send(self(), :fetch, [])
     {:producer, state}
   end
 
   @impl true
   def handle_demand(incoming_demand, state) do
-    %{config: config, demand: demand, queue: queue} = state
-
-    Logger.info("incoming_demand: #{incoming_demand}")
+    # Fulfil demand from queue
+    %{demand: demand, queue: queue} = state
 
     queue_len = :queue.len(queue)
+    Logger.info("incoming_demand: #{incoming_demand}, demand: #{demand}, queue_len: #{queue_len}")
+
     new_demand = incoming_demand + demand
-    read_count = max(new_demand - queue_len, config.readahead_count)
-    {new_queue, new_state} = add_files_to_queue(queue, read_count, state)
 
-    {events, remaining_queue, remaining_demand} = dispatch_events(new_queue, :queue.len(new_queue), new_demand)
-    Logger.debug("Dispatching events: #{inspect(events)}")
-    Logger.debug("remaining_demand: #{remaining_demand}, remaining_queue: #{inspect(remaining_queue)}")
+    {events, remaining_queue, remaining_demand} = dispatch_events(queue, queue_len, new_demand)
+    Logger.debug("events: #{inspect(events)}, remaining_queue: #{inspect(remaining_queue)}, remaining_demand: #{remaining_demand}")
 
+    {:noreply, events, %{state | queue: remaining_queue, demand: remaining_demand}}
+  end
+
+  # Fetch new files from the input directory and add them to the queue
+  @impl true
+  def handle_info(:fetch, state) do
+    Logger.info("handle_info(:fetch) state: #{inspect(state)}")
+
+    %{config: config, queue: queue, demand: demand} = state
+
+    maybe_garbage_collect()
+
+    queue_len = :queue.len(queue)
+    desired_count = config.prefetch_count - queue_len
+
+    {new_queue, new_state} = add_files_to_queue(queue, desired_count, state)
+
+    {events, remaining_queue, remaining_demand} = dispatch_events(new_queue, :queue.len(new_queue), demand)
+
+    Process.send_after(self(), :fetch, state.fetch_interval)
     {:noreply, events, %{new_state | queue: remaining_queue, demand: remaining_demand}}
   end
 
   private do
+    # Fulfil demand from queue
+    @spec dispatch_events(:queue.queue(), non_neg_integer(), non_neg_integer()) :: {events :: list(), remaining_queue :: :queue.queue(), remaining_demand :: non_neg_integer()}
+    defp dispatch_events(queue, queue_len, demand)
+
+    # queue is empty
+    defp dispatch_events(queue, 0, demand) do
+      {[], queue, demand}
+    end
+
+    # queue has enough to satisfy demand
+    defp dispatch_events(queue, queue_len, demand) when queue_len >= demand do
+      {events_queue, remaining_queue} = :queue.split(demand, queue)
+      {:queue.to_list(events_queue), remaining_queue, 0}
+    end
+
+    # queue does not have enough events to satisfy demand
+    defp dispatch_events(queue, queue_len, demand) when queue_len < demand do
+      {events_queue, remaining_queue} = :queue.split(demand, queue)
+      {:queue.to_list(events_queue), remaining_queue, demand - queue_len}
+    end
+
     @spec add_files_to_queue(:queue.queue(), non_neg_integer(), map()) :: {:queue.queue(), map()}
     defp add_files_to_queue(queue, desired_count, state) do
       %{config: config, last_file: last_file} = state
 
       case read_files(config) do
-        {:ok, files} ->
-          Logger.debug("Files: #{inspect(files)}")
+        {:ok, all_files} ->
+          now = :calendar.datetime_to_gregorian_seconds(:calendar.universal_time())
 
-          # Get files that are newer than the last proccessed file, if any
-          new_files = new_files(files, last_file)
+          new_files =
+            all_files
+            # Get files that are newer than the last proccessed file, if any
+            |> new_files(last_file)
+            # Restrict the number of files that we have to stat
+            |> Enum.take(desired_count)
+            # Stat file and filter out directories and other non-regular files
+            |> Enum.flat_map(&stat_file/1)
+            # Skip files that are newer than the minimum age
+            |> Enum.filter(&by_age(&1, now, config.min_age))
+            # |> Enum.map(&get_datetime_from_filename(&1, datetime_pattern))
 
-          Logger.debug("New files: #{inspect(new_files)}")
-
-          new_files = Enum.take(new_files, desired_count)
+          Logger.debug("new_files: #{inspect(new_files)}")
 
           if Enum.empty?(new_files) do
+            Logger.debug("queue len: #{:queue.len(queue)}")
             {queue, state}
           else
             last_file = List.last(new_files).name
             Logger.debug("New last_file: #{inspect(last_file)}")
 
-            queue = Enum.reduce(new_files, queue, &:queue.in/2)
-            {queue, %{state | last_file: last_file}}
+            new_queue = Enum.reduce(new_files, queue, &:queue.in/2)
+            Logger.debug("new queue len: #{:queue.len(new_queue)}")
+            {new_queue, %{state | last_file: last_file}}
           end
 
         {:error, reason} ->
-          Logger.error("Error reading from #{config.in_dir}: #{inspect(reason)}")
-          {queue, state}
+          Logger.error("Error reading files from #{config.in_dir}: #{inspect(reason)}")
+            {queue, state}
       end
-    end
-
-    # Try to fulfil demand from queue
-    @spec dispatch_events(:queue.queue(), non_neg_integer(), non_neg_integer()) :: {events :: list(), remaining_queue :: :queue.queue(), remaining_demand :: non_neg_integer()}
-    defp dispatch_events(queue, queue_len, demand)
-    defp dispatch_events(queue, 0, demand) do
-      # queue is empty
-      {[], queue, demand}
-    end
-    defp dispatch_events(queue, queue_len, demand) when queue_len >= demand do
-      # queue has enough to satisfy demand
-      {events_queue, remaining_queue} = :queue.split(demand, queue)
-      {:queue.to_list(events_queue), remaining_queue, 0}
-    end
-    defp dispatch_events(queue, queue_len, demand) when queue_len < demand do
-      # queue does not have enough events to satisfy demand
-      {events_queue, remaining_queue} = :queue.split(demand, queue)
-      {:queue.to_list(events_queue), remaining_queue, demand - queue_len}
     end
 
     # Read files from the input directory, filtering by name and age
     @spec read_files(map()) :: {:ok, list(map())} | {:error, File.posix() | :badarg | {:no_translation, binary()}}
     defp read_files(config) do
       %{
-        datetime_pattern: datetime_pattern,
+        # datetime_pattern: datetime_pattern,
         file_pattern: file_pattern,
         in_dir: in_dir,
-        min_age: min_age,
       } = config
       
       with {:ok, all_files} <- File.ls(in_dir) do
-          Logger.debug("Files in #{in_dir}: #{inspect(all_files)}")
-
-          now = :calendar.datetime_to_gregorian_seconds(:calendar.universal_time())
+          Logger.debug("All files in #{in_dir}: #{inspect(all_files)}")
 
           files =
             all_files
             |> Enum.filter(&Regex.match?(file_pattern, &1))
             |> Enum.sort()
             |> Enum.map(fn name -> %{name: name, path: Path.join(in_dir, name)} end)
-            |> Enum.flat_map(&stat_file/1)
-            |> Enum.filter(&by_age(&1, now, min_age))
-            |> Enum.map(&get_datetime_from_filename(&1, datetime_pattern))
 
         {:ok, files}
       end
+    end
+
+    # Get files that are newer than the last proccessed file, if any
+    # This compares files by name, assuming that they are sorted by date
+    @spec new_files(list(map()), binary() | nil) :: list(map())
+    defp new_files(events, nil), do: events
+    defp new_files(events, last_file) do
+      {_old, new} = Enum.split_while(events, fn event -> event.name <= last_file end)
+      new
     end
 
     # Stat file and and filter out directories and other non-regular files
@@ -169,10 +216,10 @@ defmodule S3Uploader.FileProducer do
       end
     end
 
-    # Filter function to skip new files
+    # Filter to skip new files
     @spec by_age(map(), integer(), integer()) :: boolean()
     defp by_age(%{path: path, stat: stat}, now, min_age) do
-      if age(stat.mtime, now) > min_age do
+      if age_in_seconds(stat.mtime, now) > min_age do
         true
       else
         Logger.debug("Skipping new file #{path}")
@@ -181,7 +228,7 @@ defmodule S3Uploader.FileProducer do
     end
 
     # Get age in seconds
-    defp age(datetime, now) do
+    defp age_in_seconds(datetime, now) do
       now - :calendar.datetime_to_gregorian_seconds(datetime)
     end
 
@@ -218,13 +265,18 @@ defmodule S3Uploader.FileProducer do
       Path.join([year, month, day])
     end
 
-    # Get files that are newer than the last proccessed file
-    # This compares files by name, assuming that they are sorted by date
-    @spec new_files(list(map()), binary() | nil) :: list(map())
-    defp new_files(files, nil), do: files
-    defp new_files(files, last_file) do
-      {_old, new} = Enum.split_while(files, fn file -> file.name <= last_file end)
-      new
+  end
+
+  # Manually trigger garbage collection to clear refc binary memory
+  @spec maybe_garbage_collect() :: :ok
+  defp maybe_garbage_collect do
+    case :recon.info(self(), :binary_memory) do
+      {:binary_memory, binary} when binary > 50_000_000 ->
+        Logger.debug("Forcing garbage collection")
+        :erlang.garbage_collect(self())
+
+      _ ->
+        :ok
     end
   end
 end
