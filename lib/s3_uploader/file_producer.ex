@@ -7,6 +7,8 @@ defmodule S3Uploader.FileProducer do
   @behaviour Broadway.Producer
   # @behaviour Broadway.Acknowledger
 
+  @max_binary_memory 50_000_000
+
   use Private
 
   require Logger
@@ -272,7 +274,7 @@ defmodule S3Uploader.FileProducer do
   @spec maybe_garbage_collect() :: :ok
   defp maybe_garbage_collect do
     case :recon.info(self(), :binary_memory) do
-      {:binary_memory, binary} when binary > 50_000_000 ->
+      {:binary_memory, binary} when binary > @max_binary_memory ->
         Logger.debug("Forcing garbage collection")
         :erlang.garbage_collect(self())
 
