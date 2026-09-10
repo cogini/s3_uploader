@@ -3,7 +3,6 @@ defmodule S3Uploader.FileConsumer do
   A GenStage consumer that processes files.
   """
   use GenStage
-  use Private
 
   alias S3Uploader.FileProducer
 
