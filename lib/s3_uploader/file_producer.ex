@@ -34,6 +34,9 @@ defmodule S3Uploader.FileProducer do
       # file_pattern: Regex.compile!(args[:file_pattern] || ".*\\.log$"),
       file_pattern: Regex.compile!(args[:file_pattern] || ".*$"),
 
+      # Files to queue in advance of demand
+      readahead_count: args[:readahead_count] || 10,
+
       # Regex to extract datetime from filename
       datetime_pattern:
         Regex.compile!(
@@ -43,7 +46,9 @@ defmodule S3Uploader.FileProducer do
 
     state = %{
       config: config,
-      last_file: nil
+      last_file: nil,
+      demand: 0,
+      queue: :queue.new()
     }
 
     Logger.debug("state: #{inspect(state)}")
@@ -52,35 +57,73 @@ defmodule S3Uploader.FileProducer do
   end
 
   @impl true
-  def handle_demand(demand, state) when demand > 0 do
-    config = state.config
-    case read_files(config) do
-      {:ok, files} ->
-        Logger.debug("Files: #{inspect(files)}")
+  def handle_demand(incoming_demand, state) do
+    %{config: config, demand: demand, queue: queue} = state
 
-        # Get files that are newer than the last proccessed file, if any
-        new_files = new_files(files, state.last_file)
+    Logger.info("incoming_demand: #{incoming_demand}")
 
-        Logger.debug("New files: #{inspect(new_files)}")
+    queue_len = :queue.len(queue)
+    new_demand = incoming_demand + demand
+    read_count = max(new_demand - queue_len, config.readahead_count)
+    {new_queue, new_state} = add_files_to_queue(queue, read_count, state)
 
-        new_files = Enum.take(new_files, demand)
+    {events, remaining_queue, remaining_demand} = dispatch_events(new_queue, :queue.len(new_queue), new_demand)
+    Logger.debug("Dispatching events: #{inspect(events)}")
+    Logger.debug("remaining_demand: #{remaining_demand}, remaining_queue: #{inspect(remaining_queue)}")
 
-        if Enum.empty?(new_files) do
-          {:noreply, new_files, state}
-        else
-          last_file = List.last(new_files).name
-          Logger.debug("New last_file: #{inspect(last_file)}")
-
-          {:noreply, new_files, %{state | last_file: last_file}}
-        end
-
-      {:error, reason} ->
-        Logger.error("Error reading from #{config.in_dir}: #{inspect(reason)}")
-        {:noreply, [], state}
-    end
+    {:noreply, events, %{new_state | queue: remaining_queue, demand: remaining_demand}}
   end
 
   private do
+    @spec add_files_to_queue(:queue.queue(), non_neg_integer(), map()) :: {:queue.queue(), map()}
+    defp add_files_to_queue(queue, desired_count, state) do
+      %{config: config, last_file: last_file} = state
+
+      case read_files(config) do
+        {:ok, files} ->
+          Logger.debug("Files: #{inspect(files)}")
+
+          # Get files that are newer than the last proccessed file, if any
+          new_files = new_files(files, last_file)
+
+          Logger.debug("New files: #{inspect(new_files)}")
+
+          new_files = Enum.take(new_files, desired_count)
+
+          if Enum.empty?(new_files) do
+            {queue, state}
+          else
+            last_file = List.last(new_files).name
+            Logger.debug("New last_file: #{inspect(last_file)}")
+
+            queue = Enum.reduce(new_files, queue, &:queue.in/2)
+            {queue, %{state | last_file: last_file}}
+          end
+
+        {:error, reason} ->
+          Logger.error("Error reading from #{config.in_dir}: #{inspect(reason)}")
+          {queue, state}
+      end
+    end
+
+    # Try to fulfil demand from queue
+    @spec dispatch_events(:queue.queue(), non_neg_integer(), non_neg_integer()) :: {events :: list(), remaining_queue :: :queue.queue(), remaining_demand :: non_neg_integer()}
+    defp dispatch_events(queue, queue_len, demand)
+    defp dispatch_events(queue, 0, demand) do
+      # queue is empty
+      {[], queue, demand}
+    end
+    defp dispatch_events(queue, queue_len, demand) when queue_len >= demand do
+      # queue has enough to satisfy demand
+      {events_queue, remaining_queue} = :queue.split(demand, queue)
+      {:queue.to_list(events_queue), remaining_queue, 0}
+    end
+    defp dispatch_events(queue, queue_len, demand) when queue_len < demand do
+      # queue does not have enough events to satisfy demand
+      {events_queue, remaining_queue} = :queue.split(demand, queue)
+      {:queue.to_list(events_queue), remaining_queue, demand - queue_len}
+    end
+
     # Read files from the input directory, filtering by name and age
     @spec read_files(map()) :: {:ok, list(map())} | {:error, File.posix() | :badarg | {:no_translation, binary()}}
     defp read_files(config) do
@@ -98,40 +141,30 @@ defmodule S3Uploader.FileProducer do
 
           files =
             all_files
-            |> Enum.filter(&by_name(&1, file_pattern))
             |> Enum.filter(&Regex.match?(file_pattern, &1))
             |> Enum.sort()
             |> Enum.map(fn name -> %{name: name, path: Path.join(in_dir, name)} end)
-            |> Enum.map(&get_datetime_from_filename(&1, datetime_pattern))
             |> Enum.flat_map(&stat_file/1)
             |> Enum.filter(&by_age(&1, now, min_age))
+            |> Enum.map(&get_datetime_from_filename(&1, datetime_pattern))
 
         {:ok, files}
       end
     end
 
-    # Test if filename matches Regex pattern
-    @spec by_name(binary(), Regex.t()) :: boolean()
-    defp by_name(filename, pattern) do
-      Regex.match?(pattern, filename)
-    end
-
+    # Stat file and and filter out directories and other non-regular files
     @spec stat_file(map()) :: list(map())
     defp stat_file(%{path: path} = rec) do
-      case File.stat(path, time: :universal) do
-        {:ok, %{type: :regular} = stat} ->
+      case File.stat!(path, time: :universal) do
+        %{type: :regular} = stat ->
           [Map.put(rec, :stat, stat)]
 
-        {:ok, %{type: :directory}} ->
+        %{type: :directory} ->
           # Logger.debug("Skipping #{type} #{path}")
           []
 
-        {:ok, %{type: type}} ->
+        %{type: type} ->
           Logger.debug("Skipping #{type} #{path}")
-          []
-
-        {:error, reason} ->
-          Logger.error("Could not stat file #{path}: #{reason}")
           []
       end
     end
