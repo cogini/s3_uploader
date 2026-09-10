@@ -51,6 +51,7 @@ defmodule S3Uploader.MixProject do
 
   defp deps do
     [
+      {:broadway, "~> 1.3"},
       {:credo, "~> 1.6", only: [:dev, :test], runtime: false},
       {:dialyxir, "~> 1.4", only: [:dev, :test], runtime: false},
       {:ex_aws, "~> 2.6"},
@@ -62,6 +63,7 @@ defmodule S3Uploader.MixProject do
       {:junit_formatter, "~> 3.3", only: [:dev, :test], runtime: false},
       {:mix_audit, "~> 2.0", only: [:dev, :test], runtime: false},
       {:private, "~> 0.1.2"},
+      {:recon, "~> 2.5"},
       {:styler, "~> 1.12.0", only: [:dev, :test], runtime: false}
     ]
   end
