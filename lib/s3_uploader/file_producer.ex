@@ -53,14 +53,13 @@ defmodule S3Uploader.FileProducer do
       datetime_pattern:
         Regex.compile!(
           args[:datetime_pattern] || "\.*-(?<year>\\d{4})(?<month>\\d{2})(?<day>\\d{2}).*"
-        ),
+        )
     }
 
     fetch_interval = args[:fetch_interval] || 10_000
 
     state = %{
       config: config,
-
       state_tab: state_tab,
 
       # Unfulfilled demand from consumers
@@ -73,7 +72,7 @@ defmodule S3Uploader.FileProducer do
       last_file: nil,
 
       # How often to check for new files in ms
-      fetch_interval: fetch_interval,
+      fetch_interval: fetch_interval
     }
 
     Logger.debug("state: #{inspect(state)}")
@@ -93,7 +92,10 @@ defmodule S3Uploader.FileProducer do
     new_demand = incoming_demand + demand
 
     {events, remaining_queue, remaining_demand} = dispatch_events(queue, queue_len, new_demand)
-    Logger.debug("events: #{inspect(events)}, remaining_queue: #{inspect(remaining_queue)}, remaining_demand: #{remaining_demand}")
+
+    Logger.debug(
+      "events: #{inspect(events)}, remaining_queue: #{inspect(remaining_queue)}, remaining_demand: #{remaining_demand}"
+    )
 
     {:noreply, events, %{state | queue: remaining_queue, demand: remaining_demand}}
   end
@@ -112,15 +114,17 @@ defmodule S3Uploader.FileProducer do
 
     new_queue = add_files_to_queue(queue, desired_count, state)
 
-    {events, remaining_queue, remaining_demand} = dispatch_events(new_queue, :queue.len(new_queue), demand)
+    {events, remaining_queue, remaining_demand} =
+      dispatch_events(new_queue, :queue.len(new_queue), demand)
 
-    messages = for event <- events do
-      %Broadway.Message{
-        data: event,
-        acknowledger: Broadway.CallerAcknowledger.init({self(), make_ref()}, :ignored),
-        metadata: Map.take(event, [:name, :path, :stat])
-      }
-    end
+    messages =
+      for event <- events do
+        %Broadway.Message{
+          data: event,
+          acknowledger: Broadway.CallerAcknowledger.init({self(), make_ref()}, :ignored),
+          metadata: Map.take(event, [:name, :path, :stat])
+        }
+      end
 
     Process.send_after(self(), :fetch, state.fetch_interval)
     {:noreply, messages, %{state | queue: remaining_queue, demand: remaining_demand}}
@@ -180,7 +184,7 @@ defmodule S3Uploader.FileProducer do
               []
             end
         end
-    end
+      end
 
     {:noreply, List.flatten(retry_messages), state}
   end
@@ -204,7 +208,9 @@ defmodule S3Uploader.FileProducer do
 
   private do
     # Fulfil demand from queue
-    @spec dispatch_events(:queue.queue(), non_neg_integer(), non_neg_integer()) :: {events :: list(), remaining_queue :: :queue.queue(), remaining_demand :: non_neg_integer()}
+    @spec dispatch_events(:queue.queue(), non_neg_integer(), non_neg_integer()) ::
+            {events :: list(), remaining_queue :: :queue.queue(),
+             remaining_demand :: non_neg_integer()}
     defp dispatch_events(queue, queue_len, demand)
 
     # queue is empty
@@ -242,7 +248,8 @@ defmodule S3Uploader.FileProducer do
             |> Enum.flat_map(&stat_file/1)
             # Skip files that are newer than the minimum age
             |> Enum.filter(&by_age(&1, now, config.min_age))
-            # |> Enum.map(&get_datetime_from_filename(&1, datetime_pattern))
+
+          # |> Enum.map(&get_datetime_from_filename(&1, datetime_pattern))
 
           Logger.debug("new_files: #{inspect(new_files)}")
 
@@ -259,23 +266,24 @@ defmodule S3Uploader.FileProducer do
 
         {:error, reason} ->
           Logger.error("Error reading files from #{config.in_dir}: #{inspect(reason)}")
-            queue
+          queue
       end
     end
 
     # Read files from the input directory, filtering by name and age
-    @spec read_files(map()) :: {:ok, list(map())} | {:error, File.posix() | :badarg | {:no_translation, binary()}}
+    @spec read_files(map()) ::
+            {:ok, list(map())} | {:error, File.posix() | :badarg | {:no_translation, binary()}}
     defp read_files(config) do
       %{file_pattern: file_pattern, in_dir: in_dir} = config
-      
-      with {:ok, all_files} <- File.ls(in_dir) do
-          Logger.debug("all_files in #{in_dir}: #{inspect(all_files)}")
 
-          files =
-            all_files
-            |> match_names(file_pattern)
-            |> Enum.sort()
-            |> Enum.map(fn name -> %{name: name, path: Path.join(in_dir, name)} end)
+      with {:ok, all_files} <- File.ls(in_dir) do
+        Logger.debug("all_files in #{in_dir}: #{inspect(all_files)}")
+
+        files =
+          all_files
+          |> match_names(file_pattern)
+          |> Enum.sort()
+          |> Enum.map(fn name -> %{name: name, path: Path.join(in_dir, name)} end)
 
         {:ok, files}
       end
@@ -283,6 +291,7 @@ defmodule S3Uploader.FileProducer do
 
     # Select names that match Regex pattern, if any
     defp match_names(names, nil), do: names
+
     defp match_names(names, file_pattern) do
       Enum.filter(names, fn name -> Regex.match?(file_pattern, name) end)
     end
@@ -290,7 +299,7 @@ defmodule S3Uploader.FileProducer do
     # Get files that are not already in the state table
     @spec new_files(list(map()), atom()) :: list(map())
     defp new_files(events, state_tab) do
-      file_state = :ets.tab2list(state_tab) |> Enum.into(%{}) 
+      file_state = :ets.tab2list(state_tab) |> Enum.into(%{})
       Enum.filter(events, fn event -> not Map.has_key?(file_state, event.path) end)
     end
 
@@ -375,13 +384,13 @@ defmodule S3Uploader.FileProducer do
   end
 
   defp name(args) do
-      case Keyword.fetch(args, :broadway) do
-        {:ok, config} ->
-            config[:name]
+    case Keyword.fetch(args, :broadway) do
+      {:ok, config} ->
+        config[:name]
 
-        :error ->
-          args[:name] || __MODULE__
-      end
+      :error ->
+        args[:name] || __MODULE__
+    end
   end
 
   # Manually trigger garbage collection to clear refc binary memory
