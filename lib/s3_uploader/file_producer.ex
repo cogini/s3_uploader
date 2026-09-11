@@ -22,12 +22,20 @@ defmodule S3Uploader.FileProducer do
   def init(args) do
     Logger.info("#{__MODULE__} init: #{inspect(args)}")
 
+    state_tab = args[:state_tab] || :"#{name(args)}_producer_state"
+
+    # TODO: handle case where table already exists
+    :ets.new(state_tab, [:named_table, :public, :set])
+
     config = %{
       # Source directory for files
       in_dir: args[:in_dir],
 
       # Directory to save files after they have been processed
       archive_dir: args[:archive_dir],
+
+      # Directory to save failed files
+      failed_dir: args[:failed_dir],
 
       # Ignore files newer than this number of seconds.
       # Avoids processing files that are currently being written.
@@ -52,6 +60,8 @@ defmodule S3Uploader.FileProducer do
 
     state = %{
       config: config,
+
+      state_tab: state_tab,
 
       # Unfulfilled demand from consumers
       demand: 0,
@@ -100,18 +110,97 @@ defmodule S3Uploader.FileProducer do
     queue_len = :queue.len(queue)
     desired_count = config.prefetch_count - queue_len
 
-    {new_queue, new_state} = add_files_to_queue(queue, desired_count, state)
+    new_queue = add_files_to_queue(queue, desired_count, state)
 
     {events, remaining_queue, remaining_demand} = dispatch_events(new_queue, :queue.len(new_queue), demand)
 
+    messages = for event <- events do
+      %Broadway.Message{
+        data: event,
+        acknowledger: Broadway.CallerAcknowledger.init({self(), make_ref()}, :ignored),
+        metadata: Map.take(event, [:name, :path, :stat])
+      }
+    end
+
     Process.send_after(self(), :fetch, state.fetch_interval)
-    {:noreply, events, %{new_state | queue: remaining_queue, demand: remaining_demand}}
+    {:noreply, messages, %{state | queue: remaining_queue, demand: remaining_demand}}
+  end
+
+  # :ets.tab2list(:zones)
+
+  # Handler for Broadway.CallerAcknowledger
+  def handle_info({:ack, _ref, successful_messages, failed_messages} = message, state) do
+    Logger.info(fn -> "ACK: #{inspect(message)}" end)
+    config = state.config
+    %{archive_dir: archive_dir, failed_dir: failed_dir, datetime_pattern: pattern} = config
+
+    # Move files to archive_dir after successful processing
+    for message <- successful_messages do
+      event = message.metadata
+      %{name: name, path: path} = event
+
+      {:ok, datetime} = filename_to_datetime(path, pattern)
+      datetime_path = datetime_to_path(datetime)
+      dest_path = Path.join([archive_dir, datetime_path, name])
+
+      Logger.debug("Moving file #{path} to archive #{dest_path}")
+      File.mkdir_p!(Path.join(archive_dir, datetime_path))
+      :ok = File.rename(path, dest_path)
+
+      :ets.delete(state.state_tab, path)
+    end
+
+    # Retry or move files to failed_dir
+    retry_messages =
+      for message <- failed_messages do
+        event = message.metadata
+        %{path: path} = event
+
+        case :ets.lookup(state.state_tab, path) do
+          [] ->
+            # This should not happen
+            Logger.warning("File not found in state table, retrying: #{path}")
+            :ets.insert(state.state_tab, {path, %{try: 1}})
+            message
+
+          [{_path, %{try: try}}] ->
+            if try < 3 do
+              Logger.info("Retrying file (try #{try + 1}): #{path}")
+              :ets.insert(state.state_tab, {path, %{try: try + 1}})
+              message
+            else
+              Logger.info("File retries exceeded, moving to failed dir: #{path}")
+              {:ok, datetime} = filename_to_datetime(path, pattern)
+              datetime_path = datetime_to_path(datetime)
+              dest_path = Path.join([failed_dir, datetime_path, Path.basename(path)])
+
+              File.mkdir_p!(Path.join(failed_dir, datetime_path))
+              :ok = File.rename(path, dest_path)
+              :ets.delete(state.state_tab, path)
+              []
+            end
+        end
+    end
+
+    {:noreply, List.flatten(retry_messages), state}
+  end
+
+  # Handler for Broadway.CallerAcknowledger
+  def handle_info({:configure, _ref, _options} = message, state) do
+    Logger.info(fn -> "ACK: #{inspect(message)}" end)
+    {:noreply, [], state}
   end
 
   def handle_info(message, state) do
     Logger.info(fn -> "Unexpected message: #{inspect(message)}" end)
     {:noreply, [], state}
   end
+
+  # defp datetime_path(event, pattern) do
+  #   %{name: name, path: path} = event
+  #   {:ok, datetime} = filename_to_datetime(path, pattern)
+  #   datetime_path = datetime_to_path(datetime)
+  # end
 
   private do
     # Fulfil demand from queue
@@ -135,9 +224,9 @@ defmodule S3Uploader.FileProducer do
       {:queue.to_list(events_queue), remaining_queue, demand - queue_len}
     end
 
-    @spec add_files_to_queue(:queue.queue(), non_neg_integer(), map()) :: {:queue.queue(), map()}
+    @spec add_files_to_queue(:queue.queue(), non_neg_integer(), map()) :: :queue.queue()
     defp add_files_to_queue(queue, desired_count, state) do
-      %{config: config, last_file: last_file} = state
+      %{config: config, state_tab: state_tab} = state
 
       case read_files(config) do
         {:ok, all_files} ->
@@ -146,7 +235,7 @@ defmodule S3Uploader.FileProducer do
           new_files =
             all_files
             # Get files that are newer than the last proccessed file, if any
-            |> new_files(last_file)
+            |> new_files(state_tab)
             # Restrict the number of files that we have to stat
             |> Enum.take(desired_count)
             # Stat file and filter out directories and other non-regular files
@@ -159,18 +248,18 @@ defmodule S3Uploader.FileProducer do
 
           if Enum.empty?(new_files) do
             Logger.debug("No new files found in #{config.in_dir}")
-            {queue, state}
+            queue
           else
-            last_file = List.last(new_files).name
             new_queue = Enum.reduce(new_files, queue, &:queue.in/2)
+            Enum.each(new_files, fn file -> :ets.insert(state_tab, {file.path, %{try: 1}}) end)
             # Logger.debug("new queue len: #{:queue.len(new_queue)}")
-            Logger.debug("Added new files to queue: #{length(new_files)}, last_file: #{last_file}")
-            {new_queue, %{state | last_file: last_file}}
+            Logger.debug("Added new files to queue: #{length(new_files)}")
+            new_queue
           end
 
         {:error, reason} ->
           Logger.error("Error reading files from #{config.in_dir}: #{inspect(reason)}")
-            {queue, state}
+            queue
       end
     end
 
@@ -186,7 +275,7 @@ defmodule S3Uploader.FileProducer do
             all_files
             |> match_names(file_pattern)
             |> Enum.sort()
-            |> Enum.map(fn name -> %{file_name: name, path: Path.join(in_dir, name)} end)
+            |> Enum.map(fn name -> %{name: name, path: Path.join(in_dir, name)} end)
 
         {:ok, files}
       end
@@ -198,13 +287,11 @@ defmodule S3Uploader.FileProducer do
       Enum.filter(names, fn name -> Regex.match?(file_pattern, name) end)
     end
 
-    # Get files that are newer than the last proccessed file, if any
-    # This compares files by name, assuming that they are sorted by date
-    @spec new_files(list(map()), binary() | nil) :: list(map())
-    defp new_files(events, nil), do: events
-    defp new_files(events, last_file) do
-      {_old, new} = Enum.split_while(events, fn event -> event.name <= last_file end)
-      new
+    # Get files that are not already in the state table
+    @spec new_files(list(map()), atom()) :: list(map())
+    defp new_files(events, state_tab) do
+      file_state = :ets.tab2list(state_tab) |> Enum.into(%{}) 
+      Enum.filter(events, fn event -> not Map.has_key?(file_state, event.path) end)
     end
 
     # Stat file and and filter out directories and other non-regular files
@@ -241,26 +328,39 @@ defmodule S3Uploader.FileProducer do
     end
 
     # Extract datetime from filename using Regex pattern
-    defp get_datetime_from_filename(%{path: path} = rec, pattern) do
-      {:ok, datetime} = filename_to_datetime(path, pattern)
-      datetime_path = datetime_to_path(datetime)
-      Map.merge(rec, %{datetime: datetime, datetime_path: datetime_path})
+    @spec get_datetime_from_filename(map(), Regex.t()) :: map()
+    defp get_datetime_from_filename(rec, pattern) do
+      %{path: path} = rec
+
+      case filename_to_datetime(path, pattern) do
+        {:ok, datetime} ->
+          datetime_path = datetime_to_path(datetime)
+          Map.merge(rec, %{datetime: datetime, datetime_path: datetime_path})
+
+        {:error, :no_match} ->
+          Logger.warning("Filename #{path} does not match datetime pattern #{inspect(pattern)}")
+          rec
+      end
     end
 
     # Get datetime from filename using Regex pattern
     @spec filename_to_datetime(binary(), Regex.t()) :: {:ok, DateTime.t()}
     defp filename_to_datetime(filename, pattern) do
-      named_captures = Regex.named_captures(pattern, filename)
+      case Regex.named_captures(pattern, filename) do
+        nil ->
+          {:error, :no_match}
 
-      {:ok, date} =
-        Date.new(
-          String.to_integer(named_captures["year"]),
-          String.to_integer(named_captures["month"]),
-          String.to_integer(named_captures["day"])
-        )
+        named_captures ->
+          {:ok, date} =
+            Date.new(
+              String.to_integer(named_captures["year"]),
+              String.to_integer(named_captures["month"]),
+              String.to_integer(named_captures["day"])
+            )
 
-      {:ok, time} = Time.new(0, 0, 0, 0)
-      DateTime.new(date, time, "Etc/UTC")
+          {:ok, time} = Time.new(0, 0, 0, 0)
+          DateTime.new(date, time, "Etc/UTC")
+      end
     end
 
     # Format datetime as path string "YYYY/MM/DD"
@@ -272,7 +372,16 @@ defmodule S3Uploader.FileProducer do
 
       Path.join([year, month, day])
     end
+  end
 
+  defp name(args) do
+      case Keyword.fetch(args, :broadway) do
+        {:ok, config} ->
+            config[:name]
+
+        :error ->
+          args[:name] || __MODULE__
+      end
   end
 
   # Manually trigger garbage collection to clear refc binary memory
