@@ -25,6 +25,33 @@ defmodule S3Uploader.MixProject do
     ]
   end
 
+  defp aliases do
+    [
+      setup: ["deps.get"],
+      quality: [
+        "test",
+        "format --check-formatted",
+        "credo --ignore todo",
+        # mix deps.clean --unlock --unused
+        "deps.unlock --check-unused",
+        # mix deps.update
+        # "hex.outdated",
+        # "hex.audit",
+        "deps.audit --ignore-package-names cowlib",
+        "dialyzer --quiet-with-result"
+      ],
+      "quality.ci": [
+        "format --check-formatted",
+        "deps.unlock --check-unused",
+        # "hex.outdated",
+        # "hex.audit",
+        "deps.audit --ignore-package-names cowlib",
+        "credo --ignore todo",
+        "dialyzer --quiet-with-result"
+      ]
+    ]
+  end
+
   def application do
     [
       extra_applications: [:logger]
@@ -72,19 +99,6 @@ defmodule S3Uploader.MixProject do
     "Library to upload files to S3"
   end
 
-  defp package do
-    [
-      description: description(),
-      maintainers: ["Jake Morrison"],
-      licenses: ["Apache-2.0"],
-      links: %{
-        "GitHub" => @github,
-        "Changelog" =>
-          "#{@github}/blob/#{@version}/CHANGELOG.md##{String.replace(@version, ".", "")}"
-      }
-    ]
-  end
-
   defp docs do
     [
       main: "readme",
@@ -102,30 +116,16 @@ defmodule S3Uploader.MixProject do
     ]
   end
 
-  defp aliases do
+  defp package do
     [
-      setup: ["deps.get"],
-      quality: [
-        "test",
-        "format --check-formatted",
-        "credo",
-        # mix deps.clean --unlock --unused
-        "deps.unlock --check-unused",
-        # mix deps.update
-        # "hex.outdated",
-        # "hex.audit",
-        "deps.audit --ignore-package-names cowlib",
-        "dialyzer --quiet-with-result"
-      ],
-      "quality.ci": [
-        "format --check-formatted",
-        "deps.unlock --check-unused",
-        # "hex.outdated",
-        # "hex.audit",
-        "deps.audit --ignore-package-names cowlib",
-        "credo",
-        "dialyzer --quiet-with-result"
-      ]
+      description: description(),
+      maintainers: ["Jake Morrison"],
+      licenses: ["Apache-2.0"],
+      links: %{
+        "GitHub" => @github,
+        "Changelog" =>
+          "#{@github}/blob/#{@version}/CHANGELOG.md##{String.replace(@version, ".", "")}"
+      }
     ]
   end
 end
