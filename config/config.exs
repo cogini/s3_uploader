@@ -14,7 +14,7 @@ config :ex_aws,
 
 config :logger, :default_formatter,
   format: "$time $metadata[$level] $message\n",
-  metadata: [:pid, :module, :function, :line]
+  metadata: [:pid, :module, :function, :file, :line]
 
 config :logger,
   level: :info
