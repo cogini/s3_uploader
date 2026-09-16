@@ -209,10 +209,10 @@ defmodule S3Uploader.Service do
 
       Logger.debug("Put file #{path} to s3://#{state.bucket}/#{s3_path}")
 
-      data = File.read!(path)
+      body = File.read!(path)
 
       op =
-        ExAws.S3.put_object(state.bucket, data, s3_path,
+        ExAws.S3.put_object(state.bucket, s3_path, body,
           timeout: state.timeout,
           bucket_region: state.bucket_region
         )
