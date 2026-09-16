@@ -129,7 +129,7 @@ defmodule S3Uploader.Service do
         |> Enum.map(fn name -> %{name: name, path: Path.join(in_dir, name)} end)
         |> Enum.map(&get_datetime_from_filename(&1, datetime_pattern))
         |> Enum.flat_map(&stat_file/1)
-        # |> Enum.reject(&is_empty?/1)
+        # |> Enum.reject(&empty?/1)
         |> Enum.filter(&by_age(&1, now, min_age))
         |> Enum.chunk_every(batch_size)
 
@@ -265,12 +265,12 @@ defmodule S3Uploader.Service do
       end
     end
 
-    @spec is_regular_file?(map()) :: boolean()
-    defp is_regular_file?(%{stat: %{type: :regular}}), do: true
-    defp is_regular_file?(_), do: false
+    @spec regular_file?(map()) :: boolean()
+    defp regular_file?(%{stat: %{type: :regular}}), do: true
+    defp regular_file?(_), do: false
 
-    @spec is_empty?(map()) :: boolean()
-    defp is_empty?(%{path: path, stat: stat}) do
+    @spec empty?(map()) :: boolean()
+    defp empty?(%{path: path, stat: stat}) do
       if stat.size == 0 do
         Logger.debug("Skipping empty file #{path}")
         true
