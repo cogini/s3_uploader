@@ -14,6 +14,9 @@ defmodule S3Uploader.Service do
 
   require Logger
 
+  # Files larger than this size will be use multi-part upload vs put_object
+  @upload_threshold 50_000_000
+
   @doc "Start the server"
   def start_link do
     GenServer.start_link(__MODULE__, [], [])
@@ -25,6 +28,7 @@ defmodule S3Uploader.Service do
 
   # GenServer callbacks
 
+  @impl true
   def init(args) do
     Logger.info("init: #{inspect(args)}")
 
@@ -84,6 +88,7 @@ defmodule S3Uploader.Service do
     {:ok, state}
   end
 
+  @impl true
   def handle_info(:process, state) do
     Logger.debug("handle_info: :process")
     process_files(state)
@@ -124,6 +129,7 @@ defmodule S3Uploader.Service do
         |> Enum.map(fn name -> %{name: name, path: Path.join(in_dir, name)} end)
         |> Enum.map(&get_datetime_from_filename(&1, datetime_pattern))
         |> Enum.flat_map(&stat_file/1)
+        # |> Enum.reject(&is_empty?/1)
         |> Enum.filter(&by_age(&1, now, min_age))
         |> Enum.chunk_every(batch_size)
 
@@ -175,13 +181,13 @@ defmodule S3Uploader.Service do
     end
 
     @spec process_file(map(), map()) :: :ok
-    defp process_file(rec, state) do
+    defp process_file(%{stat: stat} = rec, state) when stat.size > @upload_threshold do
       %{name: name, path: path, datetime_path: datetime_path} = rec
 
       dest_path = Path.join([state.archive_dir, datetime_path, name])
       s3_path = Path.join(state.bucket_prefix, dest_path)
 
-      Logger.debug("Uploading file #{path} to s3://#{state.bucket}/#{s3_path}")
+      Logger.debug("Upload file #{path} to s3://#{state.bucket}/#{s3_path}")
 
       path
       |> ExAws.S3.Upload.stream_file()
@@ -190,6 +196,28 @@ defmodule S3Uploader.Service do
         bucket_region: state.bucket_region
       )
       |> ExAws.request!()
+
+      Logger.debug("Moving file #{path} to archive #{dest_path}")
+      :ok = File.rename(path, dest_path)
+    end
+
+    defp process_file(rec, state) do
+      %{name: name, path: path, datetime_path: datetime_path} = rec
+
+      dest_path = Path.join([state.archive_dir, datetime_path, name])
+      s3_path = Path.join(state.bucket_prefix, dest_path)
+
+      Logger.debug("Put file #{path} to s3://#{state.bucket}/#{s3_path}")
+
+      data = File.read!(path)
+
+      op =
+        ExAws.S3.put_object(state.bucket, data, s3_path,
+          timeout: state.timeout,
+          bucket_region: state.bucket_region
+        )
+
+      ExAws.request!(op)
 
       Logger.debug("Moving file #{path} to archive #{dest_path}")
       :ok = File.rename(path, dest_path)
@@ -234,6 +262,20 @@ defmodule S3Uploader.Service do
         {:error, reason} ->
           Logger.error("Could not stat file #{path}: #{reason}")
           []
+      end
+    end
+
+    @spec is_regular_file?(map()) :: boolean()
+    defp is_regular_file?(%{stat: %{type: :regular}}), do: true
+    defp is_regular_file?(_), do: false
+
+    @spec is_empty?(map()) :: boolean()
+    defp is_empty?(%{path: path, stat: stat}) do
+      if stat.size == 0 do
+        Logger.debug("Skipping empty file #{path}")
+        true
+      else
+        true
       end
     end
 
