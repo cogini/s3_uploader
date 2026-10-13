@@ -187,7 +187,7 @@ defmodule S3Uploader.Service do
       dest_path = Path.join([state.archive_dir, datetime_path, name])
       s3_path = Path.join(state.bucket_prefix, dest_path)
 
-      Logger.debug("Upload file #{path} to s3://#{state.bucket}/#{s3_path}")
+      Logger.debug("Uploading file #{path} to s3://#{state.bucket}/#{s3_path}")
 
       path
       |> ExAws.S3.Upload.stream_file()
