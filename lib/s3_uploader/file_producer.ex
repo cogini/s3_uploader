@@ -167,22 +167,21 @@ defmodule S3Uploader.FileProducer do
             :ets.insert(state.state_tab, {path, %{try: 1}})
             message
 
-          [{_path, %{try: try}}] ->
-            if try < 3 do
-              Logger.info("Retrying file (try #{try + 1}): #{path}")
-              :ets.insert(state.state_tab, {path, %{try: try + 1}})
-              message
-            else
-              Logger.info("File retries exceeded, moving to failed dir: #{path}")
-              {:ok, datetime} = filename_to_datetime(path, pattern)
-              datetime_path = datetime_to_path(datetime)
-              dest_path = Path.join([failed_dir, datetime_path, Path.basename(path)])
+          [{_path, %{try: try}}] when try < 3 ->
+            Logger.info("Retrying file (try #{try + 1}): #{path}")
+            :ets.insert(state.state_tab, {path, %{try: try + 1}})
+            message
 
-              File.mkdir_p!(Path.join(failed_dir, datetime_path))
-              :ok = File.rename(path, dest_path)
-              :ets.delete(state.state_tab, path)
-              []
-            end
+          [{_path, %{try: try}}] ->
+            Logger.info("Retries exceeded (try #{try}), moving to failed dir: #{path}")
+            {:ok, datetime} = filename_to_datetime(path, pattern)
+            datetime_path = datetime_to_path(datetime)
+            dest_path = Path.join([failed_dir, datetime_path, Path.basename(path)])
+
+            File.mkdir_p!(Path.join(failed_dir, datetime_path))
+            :ok = File.rename(path, dest_path)
+            :ets.delete(state.state_tab, path)
+            []
         end
       end
 
