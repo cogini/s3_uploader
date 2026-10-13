@@ -352,7 +352,7 @@ defmodule S3Uploader.FileProducer do
     end
 
     # Get datetime from filename using Regex pattern
-    @spec filename_to_datetime(binary(), Regex.t()) :: {:ok, DateTime.t()}
+    @spec filename_to_datetime(binary(), Regex.t()) :: {:ok, DateTime.t()} | {:error, :no_match}
     defp filename_to_datetime(filename, pattern) do
       case Regex.named_captures(pattern, filename) do
         nil ->
