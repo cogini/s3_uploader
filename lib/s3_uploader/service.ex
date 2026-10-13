@@ -1,8 +1,8 @@
 defmodule S3Uploader.Service do
   @moduledoc """
-  GenServer which uploads log files to an S3 bucket.
+  Upload files to an S3 bucket.
 
-  It periodically looks for new files in a specificed directory, uploads
+  It periodically looks for new files in a directory, uploads
   them to S3, then moves them to an archive directory structure named by date.
 
   It parses the date from the file name to determine where to archive them.
@@ -30,7 +30,7 @@ defmodule S3Uploader.Service do
 
   @impl true
   def init(args) do
-    Logger.info("init: #{inspect(args)}")
+    Logger.info("#{__MODULE__} init: #{inspect(args)}")
 
     hostname = args[:hostname]
     bucket_prefix = Path.join(hostname, args[:bucket_prefix])
