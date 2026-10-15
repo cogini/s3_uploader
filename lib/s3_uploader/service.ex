@@ -258,19 +258,19 @@ defmodule S3Uploader.Service do
       end
     end
 
-    @spec regular_file?(map()) :: boolean()
-    defp regular_file?(%{stat: %{type: :regular}}), do: true
-    defp regular_file?(_), do: false
+    # @spec regular_file?(map()) :: boolean()
+    # defp regular_file?(%{stat: %{type: :regular}}), do: true
+    # defp regular_file?(_), do: false
 
-    @spec empty?(map()) :: boolean()
-    defp empty?(%{path: path, stat: stat}) do
-      if stat.size == 0 do
-        Logger.debug("Skipping empty file #{path}")
-        true
-      else
-        true
-      end
-    end
+    # @spec empty?(map()) :: boolean()
+    # defp empty?(%{path: path, stat: stat}) do
+    #   if stat.size == 0 do
+    #     Logger.debug("Skipping empty file #{path}")
+    #     true
+    #   else
+    #     true
+    #   end
+    # end
 
     # Filter function to skip new files
     @spec by_age(map(), integer(), integer()) :: boolean()
