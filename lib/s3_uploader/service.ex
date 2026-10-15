@@ -9,7 +9,6 @@ defmodule S3Uploader.Service do
   Files look like traffic-20260108-2049.log
   """
   use GenServer
-
   use Private
 
   require Logger
@@ -64,10 +63,7 @@ defmodule S3Uploader.Service do
       file_pattern: Regex.compile!(args[:file_pattern] || ".*\\.log$"),
 
       # Regex to extract datetime from filename
-      datetime_pattern:
-        Regex.compile!(
-          args[:datetime_pattern] || "\.*-(?<year>\\d{4})(?<month>\\d{2})(?<day>\\d{2}).*"
-        ),
+      datetime_pattern: Regex.compile!(args[:datetime_pattern] || "\.*-(?<year>\\d{4})(?<month>\\d{2})(?<day>\\d{2}).*"),
 
       # Name of S3 bucket
       bucket: args[:bucket],
@@ -158,9 +154,7 @@ defmodule S3Uploader.Service do
         %{size_mb: size_mb, dur: dur, rate: rate} = batch_stats(info, dur_ms)
         lag = DateTime.diff(DateTime.utc_now(), info.last.datetime, :second)
 
-        Logger.info(
-          "Uploaded #{info.last.name} #{info.count} files in #{dur}s #{size_mb} MB (#{rate} MB/s) lag #{lag}s"
-        )
+        Logger.info("Uploaded #{info.last.name} #{info.count} files in #{dur}s #{size_mb} MB (#{rate} MB/s) lag #{lag}s")
       end
     end
 
@@ -226,8 +220,7 @@ defmodule S3Uploader.Service do
     defp prepare_batch(batch) do
       Enum.reduce(batch, %{size: 0, count: 0, datetime_paths: [], last: nil}, fn %{
                                                                                    stat: stat,
-                                                                                   datetime_path:
-                                                                                     path
+                                                                                   datetime_path: path
                                                                                  } = rec,
                                                                                  acc ->
         %{

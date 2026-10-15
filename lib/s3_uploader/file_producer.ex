@@ -2,16 +2,15 @@ defmodule S3Uploader.FileProducer do
   @moduledoc """
   A Broadway producer that reads files from a directory.
   """
-  use GenStage
-
   @behaviour Broadway.Producer
   # @behaviour Broadway.Acknowledger
 
-  @max_binary_memory 50_000_000
-
+  use GenStage
   use Private
 
   require Logger
+
+  @max_binary_memory 50_000_000
 
   @doc false
   def start_link(opts) do
@@ -50,10 +49,7 @@ defmodule S3Uploader.FileProducer do
       prefetch_count: args[:prefetch_count] || 10,
 
       # Regex to extract datetime from filename
-      datetime_pattern:
-        Regex.compile!(
-          args[:datetime_pattern] || "\.*-(?<year>\\d{4})(?<month>\\d{2})(?<day>\\d{2}).*"
-        )
+      datetime_pattern: Regex.compile!(args[:datetime_pattern] || "\.*-(?<year>\\d{4})(?<month>\\d{2})(?<day>\\d{2}).*")
     }
 
     fetch_interval = args[:fetch_interval] || 10_000
@@ -194,22 +190,21 @@ defmodule S3Uploader.FileProducer do
     {:noreply, [], state}
   end
 
-  def handle_info(message, state) do
-    Logger.info(fn -> "Unexpected message: #{inspect(message)}" end)
-    {:noreply, [], state}
-  end
-
   # defp datetime_path(event, pattern) do
   #   %{name: name, path: path} = event
   #   {:ok, datetime} = filename_to_datetime(path, pattern)
   #   datetime_path = datetime_to_path(datetime)
   # end
 
+  def handle_info(message, state) do
+    Logger.info(fn -> "Unexpected message: #{inspect(message)}" end)
+    {:noreply, [], state}
+  end
+
   private do
     # Fulfil demand from queue
     @spec dispatch_events(:queue.queue(), non_neg_integer(), non_neg_integer()) ::
-            {events :: list(), remaining_queue :: :queue.queue(),
-             remaining_demand :: non_neg_integer()}
+            {events :: list(), remaining_queue :: :queue.queue(), remaining_demand :: non_neg_integer()}
     defp dispatch_events(queue, queue_len, demand)
 
     # queue is empty
@@ -298,7 +293,7 @@ defmodule S3Uploader.FileProducer do
     # Get files that are not already in the state table
     @spec new_files(list(map()), atom()) :: list(map())
     defp new_files(events, state_tab) do
-      file_state = :ets.tab2list(state_tab) |> Enum.into(%{})
+      file_state = state_tab |> :ets.tab2list() |> Map.new()
       Enum.filter(events, fn event -> not Map.has_key?(file_state, event.path) end)
     end
 
