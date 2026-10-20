@@ -331,20 +331,20 @@ defmodule S3Uploader.FileProducer do
     end
 
     # Extract datetime from filename using Regex pattern
-    @spec get_datetime_from_filename(map(), Regex.t()) :: map()
-    defp get_datetime_from_filename(rec, pattern) do
-      %{path: path} = rec
+    # @spec get_datetime_from_filename(map(), Regex.t()) :: map()
+    # defp get_datetime_from_filename(rec, pattern) do
+    #   %{path: path} = rec
 
-      case filename_to_datetime(path, pattern) do
-        {:ok, datetime} ->
-          datetime_path = datetime_to_path(datetime)
-          Map.merge(rec, %{datetime: datetime, datetime_path: datetime_path})
+    #   case filename_to_datetime(path, pattern) do
+    #     {:ok, datetime} ->
+    #       datetime_path = datetime_to_path(datetime)
+    #       Map.merge(rec, %{datetime: datetime, datetime_path: datetime_path})
 
-        {:error, :no_match} ->
-          Logger.warning("Filename #{path} does not match datetime pattern #{inspect(pattern)}")
-          rec
-      end
-    end
+    #     {:error, :no_match} ->
+    #       Logger.warning("Filename #{path} does not match datetime pattern #{inspect(pattern)}")
+    #       rec
+    #   end
+    # end
 
     # Get datetime from filename using Regex pattern
     @spec filename_to_datetime(binary(), Regex.t()) :: {:ok, DateTime.t()} | {:error, :no_match}
