@@ -2,6 +2,7 @@ defmodule S3Uploader.FileProducer do
   @moduledoc """
   A Broadway producer that reads files from a directory.
   """
+
   @behaviour Broadway.Producer
   # @behaviour Broadway.Acknowledger
 
@@ -36,7 +37,7 @@ defmodule S3Uploader.FileProducer do
       # Directory to save failed files
       failed_dir: args[:failed_dir],
 
-      # Ignore files newer than this number of seconds.
+      # Minimum age of files to process in seconds
       # Avoids processing files that are currently being written.
       min_age: args[:min_age] || 0,
 
@@ -125,8 +126,6 @@ defmodule S3Uploader.FileProducer do
     Process.send_after(self(), :fetch, state.fetch_interval)
     {:noreply, messages, %{state | queue: remaining_queue, demand: remaining_demand}}
   end
-
-  # :ets.tab2list(:zones)
 
   # Handler for Broadway.CallerAcknowledger
   def handle_info({:ack, _ref, successful_messages, failed_messages} = message, state) do
@@ -325,7 +324,7 @@ defmodule S3Uploader.FileProducer do
       end
     end
 
-    # Get age in seconds
+    # Get file age in seconds
     defp age_in_seconds(datetime, now) do
       now - :calendar.datetime_to_gregorian_seconds(datetime)
     end
