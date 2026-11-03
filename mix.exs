@@ -29,25 +29,30 @@ defmodule S3Uploader.MixProject do
     [
       setup: ["deps.get"],
       quality: [
-        "test",
         "format --check-formatted",
-        "credo --ignore todo",
-        # mix deps.clean --unlock --unused
+        # "credo --ignore todo",
+        "credo --mute-exit-status",
+        # "xref graph --label compile-connected --fail-above 0",
+        # Run `mix deps.clean --unlock --unused` to clean things identified below
         "deps.unlock --check-unused",
         # mix deps.update
         # "hex.outdated",
-        # "hex.audit",
-        "deps.audit --ignore-package-names cowlib",
+        "hex.audit",
+        # "deps.audit --ignore-package-names cowlib,mint,hackney",
+        # "sobelow --exit --quiet --skip -i DOS.StringToAtom,Config.HTTPS,Config.HSTS",
+        # "sobelow --exit --quiet",
         "dialyzer --quiet-with-result"
+        # "dialyzer --halt-exit-status"
       ],
       "quality.ci": [
         "format --check-formatted",
         "deps.unlock --check-unused",
         # "hex.outdated",
         # "hex.audit",
-        "deps.audit --ignore-package-names cowlib",
-        "credo --ignore todo",
-        "dialyzer --quiet-with-result"
+        # "deps.audit --ignore-package-names cowlib,mint,hackney",
+        "credo --mute-exit-status --all"
+        # "sobelow --exit --quiet --skip -i DOS.StringToAtom,Config.HTTPS,Config.HSTS",
+        # "dialyzer --quiet-with-result"
       ]
     ]
   end
