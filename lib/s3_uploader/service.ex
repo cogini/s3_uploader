@@ -35,20 +35,21 @@ defmodule S3Uploader.Service do
     bucket_prefix = Path.join(hostname, args[:bucket_prefix])
 
     check_delay = args[:check_delay] || 60_000
+
     archive_dir = args[:archive_dir]
-    :ok = File.mkdir_p!(archive_dir)
+    File.mkdir_p!(archive_dir)
 
     state = %{
       # Source directory for files
       in_dir: args[:in_dir],
 
-      # Directory to save files after they have been uploaded
+      # Directory to save files after they have been processed
       archive_dir: archive_dir,
 
       # Time to wait if there are no files in the source dir, in ms
       check_delay: check_delay,
 
-      # Ignore files newer than this number of seconds.
+      # Minimum age of files to process in seconds
       # Avoids processing files that are currently being written.
       min_age: args[:min_age] || 60,
 
@@ -59,7 +60,8 @@ defmodule S3Uploader.Service do
       # Used to limit logging output, providing statistics per batch
       batch_size: args[:batch_size] || System.schedulers_online(),
 
-      # Regex matching files to upload
+      # Regex matching files to process
+      # Files that do not match this pattern will be ignored
       file_pattern: Regex.compile!(args[:file_pattern] || ".*\\.log$"),
 
       # Regex to extract datetime from filename
@@ -75,7 +77,10 @@ defmodule S3Uploader.Service do
       bucket_region: args[:bucket_region] || "us-east-1",
 
       # Max time for an upload task to run before it is considered failed, in ms
-      timeout: args[:timeout] || 60_000
+      timeout: args[:timeout] || 60_000,
+
+      # ExAWS HTTP client opts, e.g., [recv_timeout: 60_000]
+      http_opts: args[:http_opts] || []
     }
 
     Logger.debug("state: #{inspect(state)}")
@@ -185,11 +190,8 @@ defmodule S3Uploader.Service do
 
       path
       |> ExAws.S3.Upload.stream_file()
-      |> ExAws.S3.upload(state.bucket, s3_path,
-        timeout: state.timeout,
-        bucket_region: state.bucket_region
-      )
-      |> ExAws.request!()
+      |> ExAws.S3.upload(state.bucket, s3_path, timeout: state.timeout)
+      |> ExAws.request!(request_opts(state))
 
       Logger.debug("Moving file #{path} to archive #{dest_path}")
       :ok = File.rename(path, dest_path)
@@ -205,16 +207,17 @@ defmodule S3Uploader.Service do
 
       body = File.read!(path)
 
-      op =
-        ExAws.S3.put_object(state.bucket, s3_path, body,
-          timeout: state.timeout,
-          bucket_region: state.bucket_region
-        )
-
-      ExAws.request!(op)
+      state.bucket
+      |> ExAws.S3.put_object(s3_path, body)
+      |> ExAws.request!(request_opts(state))
 
       Logger.debug("Moving file #{path} to archive #{dest_path}")
       :ok = File.rename(path, dest_path)
+    end
+
+    # Override ExAws config request
+    defp request_opts(state) do
+      [region: state.bucket_region, http_opts: state.http_opts]
     end
 
     defp prepare_batch(batch) do
@@ -238,6 +241,7 @@ defmodule S3Uploader.Service do
       Regex.match?(pattern, filename)
     end
 
+    # Stat file and and filter out directories and other non-regular files
     @spec stat_file(map()) :: list(map())
     defp stat_file(%{path: path} = rec) do
       case File.stat(path, time: :universal) do
@@ -272,10 +276,10 @@ defmodule S3Uploader.Service do
     #   end
     # end
 
-    # Filter function to skip new files
+    # Filter to skip new files
     @spec by_age(map(), integer(), integer()) :: boolean()
     defp by_age(%{path: path, stat: stat}, now, min_age) do
-      if age(stat.mtime, now) > min_age do
+      if age_in_seconds(stat.mtime, now) > min_age do
         true
       else
         Logger.debug("Skipping new file #{path}")
@@ -284,7 +288,7 @@ defmodule S3Uploader.Service do
     end
 
     # Get file age in seconds
-    defp age(datetime, now) do
+    defp age_in_seconds(datetime, now) do
       now - :calendar.datetime_to_gregorian_seconds(datetime)
     end
 
@@ -311,6 +315,7 @@ defmodule S3Uploader.Service do
       DateTime.new(date, time, "Etc/UTC")
     end
 
+    # Format datetime as path string "YYYY/MM/DD"
     @spec datetime_to_path(DateTime.t()) :: binary()
     defp datetime_to_path(datetime) do
       year = datetime.year |> Integer.to_string() |> String.pad_leading(4, "0")
